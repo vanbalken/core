@@ -2,6 +2,7 @@
 import asyncio
 from datetime import datetime
 from functools import partial
+import importlib
 import itertools
 import logging
 from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
@@ -28,11 +29,13 @@ from homeassistant.const import (
     CONF_EVENT_DATA,
     CONF_EVENT_DATA_TEMPLATE,
     CONF_MODE,
+    CONF_PLATFORM,
     CONF_REPEAT,
     CONF_SCENE,
     CONF_SEQUENCE,
     CONF_TIMEOUT,
     CONF_UNTIL,
+    CONF_WAIT_FOR_TRIGGER,
     CONF_WAIT_TEMPLATE,
     CONF_WHILE,
     EVENT_HOMEASSISTANT_STOP,
@@ -503,6 +506,58 @@ class _ScriptRun:
         if choose_data["default"]:
             await self._async_run_script(choose_data["default"])
 
+    async def _async_wait_for_trigger_step(self):
+        """Wait for a trigger event."""
+        self._script.last_action = self._action.get(CONF_ALIAS, "wait for trigger")
+        self._log("Executing step %s", self._script.last_action)
+        self._changed()
+
+        done = asyncio.Event()
+
+        async def async_done(variables, skip_condition=False, context=None):
+            if self._variables:
+                self._variables["wait_trigger"] = variables["trigger"]
+            else:
+                self._variables = {"wait_trigger": variables["trigger"]}
+            done.set()
+
+        info = {"name": self._script.name, "home_assistant_start": False}
+        # pylint: disable=protected-access
+        triggers = self._script._get_wait_triggers(self._step)
+        results = await asyncio.gather(
+            *[
+                trigger["corofunc"](self._hass, trigger["conf"], async_done, info)
+                for trigger in triggers
+            ]
+        )
+
+        if None in results:
+            self._log("Error setting up trigger", level=logging.ERROR)
+
+        removes = [remove for remove in results if remove is not None]
+        if not removes:
+            return
+
+        try:
+            delay = self._action[CONF_TIMEOUT].total_seconds()
+        except KeyError:
+            delay = None
+        tasks = [
+            self._hass.async_create_task(flag.wait()) for flag in (self._stop, done)
+        ]
+        try:
+            async with timeout(delay):
+                await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        except asyncio.TimeoutError:
+            if not self._action.get(CONF_CONTINUE_ON_TIMEOUT, True):
+                self._log(_TIMEOUT_MSG)
+                raise _StopScript
+        finally:
+            for task in tasks:
+                task.cancel()
+            for remove in removes:
+                remove()
+
     async def _async_run_script(self, script, variables=None):
         """Execute a script."""
         await self._async_run_long_action(
@@ -633,6 +688,7 @@ class Script:
         self._config_cache: Dict[Set[Tuple], Callable[..., bool]] = {}
         self._repeat_script: Dict[int, Script] = {}
         self._choose_data: Dict[int, Dict[str, Any]] = {}
+        self._wait_triggers: Dict[int, List[Dict[str, Any]]] = {}
         self._referenced_entities: Optional[Set[str]] = None
         self._referenced_devices: Optional[Set[str]] = None
 
@@ -859,6 +915,24 @@ class Script:
             choose_data = await self._async_prep_choose_data(step)
             self._choose_data[step] = choose_data
         return choose_data
+
+    def _prep_wait_triggers(self, step):
+        triggers = []
+        for conf in self.sequence[step][CONF_WAIT_FOR_TRIGGER]:
+            platform = importlib.import_module(
+                f".{conf[CONF_PLATFORM]}", "homeassistant.components.automation"
+            )
+
+            triggers.append({"corofunc": platform.async_attach_trigger, "conf": conf})
+
+        return triggers
+
+    def _get_wait_triggers(self, step):
+        triggers = self._wait_triggers.get(step)
+        if not triggers:
+            triggers = self._prep_wait_triggers(step)
+            self._wait_triggers[step] = triggers
+        return triggers
 
     def _log(self, msg, *args, level=logging.INFO):
         if self.name:
