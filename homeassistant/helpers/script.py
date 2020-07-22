@@ -512,13 +512,16 @@ class _ScriptRun:
         self._log("Executing step %s", self._script.last_action)
         self._changed()
 
+        def set_wait_trigger(value):
+            if self._variables:
+                self._variables["wait_trigger"] = value
+            else:
+                self._variables = {"wait_trigger": value}
+
         done = asyncio.Event()
 
         async def async_done(variables, skip_condition=False, context=None):
-            if self._variables:
-                self._variables["wait_trigger"] = variables["trigger"]
-            else:
-                self._variables = {"wait_trigger": variables["trigger"]}
+            set_wait_trigger(variables["trigger"])
             done.set()
 
         info = {"name": self._script.name, "home_assistant_start": False}
@@ -552,6 +555,7 @@ class _ScriptRun:
             if not self._action.get(CONF_CONTINUE_ON_TIMEOUT, True):
                 self._log(_TIMEOUT_MSG)
                 raise _StopScript
+            set_wait_trigger(None)
         finally:
             for task in tasks:
                 task.cancel()
