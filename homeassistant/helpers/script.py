@@ -434,11 +434,12 @@ class _ScriptRun:
 
     async def _async_repeat_step(self):
         """Repeat a sequence."""
-
         description = self._action.get(CONF_ALIAS, "sequence")
         repeat = self._action[CONF_REPEAT]
 
         saved_repeat_vars = self._variables.get("repeat")
+
+        # pylint: disable=protected-access
         script = self._script._get_repeat_script(self._step)
 
         async def async_run_sequence(iteration, extra_msg="", extra_vars=None):
@@ -447,7 +448,6 @@ class _ScriptRun:
             if extra_vars:
                 repeat_vars.update(extra_vars)
             self._variables["repeat"] = repeat_vars
-            # pylint: disable=protected-access
             await self._async_run_script(script)
 
         if CONF_COUNT in repeat:
@@ -517,16 +517,10 @@ class _ScriptRun:
         self._log("Executing step %s", self._script.last_action)
         self._changed()
 
-        def set_wait_trigger(value):
-            if self._variables:
-                self._variables["wait_trigger"] = value
-            else:
-                self._variables = {"wait_trigger": value}
-
         done = asyncio.Event()
 
         async def async_done(variables, skip_condition=False, context=None):
-            set_wait_trigger(variables["trigger"])
+            self._variables["wait_trigger"] = variables["trigger"]
             done.set()
 
         info = {"name": self._script.name, "home_assistant_start": False}
@@ -560,7 +554,7 @@ class _ScriptRun:
             if not self._action.get(CONF_CONTINUE_ON_TIMEOUT, True):
                 self._log(_TIMEOUT_MSG)
                 raise _StopScript
-            set_wait_trigger(None)
+            self._variables["wait_trigger"] = None
         finally:
             for task in tasks:
                 task.cancel()
