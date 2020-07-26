@@ -1,0 +1,8 @@
+{ 
+    "domain": "zeversolar_inverter", 
+    "name": "ZeverSolar Inverter", 
+    "documentation": "https://www.home-assistant.io/integrations/", 
+    "requirements": ["requests==2.23.0"], 
+    "dependencies": [], 
+    "codeowners": [] 
+  }
